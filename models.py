@@ -361,3 +361,72 @@ class Notification(Base):
     )
 
     user = relationship("User")
+
+# TABLAS DE NO REPUDIO AÑÁDIDAS
+class EmpresaExternaAudit(Base):
+    __tablename__ = "empresas_externas_audit"
+
+    id = Column(Integer, primary_key=True)
+    empresa_id = Column(Integer, ForeignKey("empresas_externas.id", ondelete="CASCADE"), nullable=False)
+
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    action = Column(String(50), nullable=False, index=True)  # create / update / custom actions
+    detail = Column(Text, nullable=True)                     # JSON con cambios
+    ip = Column(String(45))
+    user_agent = Column(String(255))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    empresa = relationship("EmpresaExterna", backref=backref("audits", passive_deletes=True))
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+class EmpresaExternaDeletion(Base):
+    __tablename__ = "empresas_externas_deletions"
+
+    id = Column(Integer, primary_key=True)
+    empresa_id = Column(Integer, nullable=True, index=True)
+
+    identificacion = Column(String(30), nullable=False)
+    nombre = Column(String(150), nullable=False)
+
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+    ip = Column(String(45))
+    user_agent = Column(String(255))
+    deleted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class ResponsableEntregaAudit(Base):
+    __tablename__ = "responsables_entrega_audit"
+
+    id = Column(Integer, primary_key=True)
+    responsable_id = Column(Integer, ForeignKey("responsables_entrega.id", ondelete="CASCADE"), nullable=False)
+
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    action = Column(String(50), nullable=False)
+    detail = Column(Text, nullable=True)
+    ip = Column(String(45))
+    user_agent = Column(String(255))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    responsable = relationship("ResponsableEntrega", backref=backref("audits", passive_deletes=True))
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+class ResponsableEntregaDeletion(Base):
+    __tablename__ = "responsables_entrega_deletions"
+
+    id = Column(Integer, primary_key=True)
+    responsable_id = Column(Integer, index=True)
+
+    id_responsable = Column(String(30), nullable=False)
+    nombre_responsable = Column(String(150), nullable=False)
+    correo_responsable = Column(String(150), nullable=False)
+    empresa = Column(String(150), nullable=True)
+
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+    ip = Column(String(45))
+    user_agent = Column(String(255))
+    deleted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

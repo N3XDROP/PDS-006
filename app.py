@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 # --- Third-party packages para Flask ---
 from dotenv import load_dotenv
-from flask import Flask, render_template, flash, redirect, url_for, session, request, jsonify, Response, send_file
+from flask import Flask, render_template, flash, redirect, url_for, session, request, jsonify, Response, send_file, abort
 from flask_wtf import CSRFProtect
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from markupsafe import Markup, escape
@@ -155,6 +155,55 @@ def to_colombia(value):
     except Exception:
         return str(value)
 
+AVAILABLE_CAPTCHAS = ["captcha1", "captcha2", "captcha3"]
+
+# Reenvio de POST captchas
+@app.route("/captcha-redirect", methods=["GET"])
+def captcha_redirect():
+    target = session.get("after_captcha")
+    method = session.get("after_captcha_method", "GET")
+    data = session.get("after_captcha_form", {})
+
+    # Limpiar
+    session.pop("after_captcha", None)
+    session.pop("after_captcha_method", None)
+
+    # Página que reenvía el POST automáticamente
+    return render_template("captcha_redirect.html",
+                           target=target, data=data, method=method)
+
+# --- Decorador para requerir captcha en rutas protegidas ---
+import random
+
+def captcha_required(captcha_page):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Si ya pasó el captcha
+            if session.get("captcha_just_passed") and session.get("captcha_just_passed") == session.get("captcha_expected"):
+                session.pop("captcha_just_passed", None)
+                session.pop("captcha_expected", None)
+                return func(*args, **kwargs)
+
+            # Elegir captcha aleatorio si se pide "random"
+            if captcha_page == "random":
+                selected = random.choice(AVAILABLE_CAPTCHAS)
+            else:
+                selected = captcha_page
+
+            # Guardar qué captcha se debe usar
+            session["captcha_expected"] = selected
+
+            # Guardar datos de la ruta original
+            session["after_captcha"] = request.path
+            session["after_captcha_method"] = request.method
+            session["after_captcha_kwargs"] = kwargs
+            session["after_captcha_form"] = request.form.to_dict()
+
+            # Redirigir al captcha correcto
+            return redirect(url_for(selected))
+        return wrapper
+    return decorator
 
 # ---------- Rutas ----------
 @app.route("/")
@@ -244,6 +293,177 @@ def login():
     # Render normal (sin bloqueo)
     return render_template("login.html", form=form)
 
+# ===================== RUTAS CAPTCHA =====================
+
+@app.route("/captcha1", methods=["GET", "POST"])
+def captcha1():
+    if request.method == "POST":
+        user_answer = request.form.get("captcha")
+        real = session.get("captcha_answer1")
+
+        if user_answer and real and user_answer.strip() == str(real):
+            session["captcha_just_passed"] = session.get("captcha_expected")
+            return redirect(url_for("captcha_redirect"))
+        else:
+            flash("CAPTCHA incorrecto.", "danger")
+            return redirect(url_for("captcha1"))
+
+    cache_buster = int(datetime.utcnow().timestamp())
+    return render_template("captcha1.html", cache_buster=cache_buster)
+
+@app.route("/captcha2", methods=["GET", "POST"])
+def captcha2():
+    if request.method == "POST":
+        num_answer = request.form.get("captcha")
+        color_answer = request.form.get("captchaColor")
+
+        real = session.get("captcha_answer2")
+        real_color = session.get("captcha_answer2_color")
+
+        if (
+            num_answer and real and num_answer.strip() == str(real)
+            and color_answer and real_color and color_answer.strip().lower() == real_color.lower()
+        ):
+            session["captcha_just_passed"] = session.get("captcha_expected")
+            return redirect(url_for("captcha_redirect"))
+        else:
+            flash("CAPTCHA incorrecto.", "danger")
+            return redirect(url_for("captcha2"))
+
+    cache_buster = int(datetime.utcnow().timestamp())
+    return render_template("captcha2.html", cache_buster=cache_buster)
+
+@app.route("/captcha3", methods=["GET", "POST"])
+def captcha3():
+    if request.method == "POST":
+        user_answer = request.form.get("captcha")
+        real = session.get("captcha_answer3")
+
+        if user_answer and real and user_answer.strip() == str(real):
+            session["captcha_just_passed"] = session.get("captcha_expected")
+            return redirect(url_for("captcha_redirect"))
+        else:
+            flash("CAPTCHA incorrecto.", "danger")
+            return redirect(url_for("captcha3"))
+
+    cache_buster = int(datetime.utcnow().timestamp())
+    return render_template("captcha3.html", cache_buster=cache_buster)
+
+@app.route("/captcha_image1")
+def captcha_image1():
+    import random, io
+    from PIL import Image, ImageDraw, ImageFont
+
+    num1 = random.randint(1, 9)
+    num2 = random.randint(1, 9)
+    operator = random.choice(["+", "-", "*"])
+
+    if operator == "+":
+        answer = num1 + num2
+        symbol = "+"
+    elif operator == "-":
+        answer = num1 - num2
+        symbol = "-"
+    else:
+        answer = num1 * num2
+        symbol = "×"
+
+    session["captcha_answer1"] = answer
+
+    text = f"{num1} {symbol} {num2} = ?"
+
+    img = Image.new("RGB", (180, 60), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font = ImageFont.load_default()
+    draw.text((20, 15), text, fill=(0, 0, 0), font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+
+    return send_file(buf, mimetype='image/png')
+
+@app.route("/captcha_image2")
+def captcha_image2():
+    import random, io
+    from PIL import Image, ImageDraw, ImageFont
+
+    color = random.choice(["rojo", "azul", "amarillo"])
+    color_map = {
+        "rojo": (255, 0, 0),
+        "azul": (0, 0, 255),
+        "amarillo": (255, 255, 0),
+    }
+
+    num1 = random.randint(1, 9)
+    num2 = random.randint(1, 9)
+    operator = random.choice(["+", "-", "*"])
+
+    if operator == "+":
+        answer = num1 + num2
+        symbol = "+"
+    elif operator == "-":
+        answer = num1 - num2
+        symbol = "-"
+    else:
+        answer = num1 * num2
+        symbol = "×"
+
+    session["captcha_answer2"] = answer
+    session["captcha_answer2_color"] = color
+
+    img = Image.new("RGB", (180, 60), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font = ImageFont.load_default()
+
+    text = f"{num1} {symbol} {num2} = ?"
+    draw.text((20, 15), text, fill=color_map[color], font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    
+    return send_file(buf, mimetype='image/png')
+
+@app.route("/captcha_image3")
+def captcha_image3():
+    import random, io
+    from PIL import Image, ImageDraw, ImageFont
+
+    a = random.randint(1, 9)
+    b = random.randint(1, 9)
+    c = random.randint(1, 9)
+
+    op1 = random.choice(["+", "-", "*"])
+    op2 = random.choice(["+", "-", "*"])
+
+    expr = f"{a} {op1} {b} {op2} {c}"
+    answer = eval(expr.replace("×", "*").replace("−", "-"))
+
+    session["captcha_answer3"] = answer
+
+    img = Image.new("RGB", (200, 60), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font = ImageFont.load_default()
+
+    draw.text((10, 15), f"{expr} = ?", fill=(0, 0, 0), font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+
+    return send_file(buf, mimetype='image/png')
+
+# FIN CAPTCHAS
 
 
 @app.route("/logout", methods=["POST"])
@@ -669,11 +889,70 @@ def users_edit(user_id: int):
     finally:
         db.close()
 
+# Eliminaciones de datos
+@app.route("/empresas/<int:empresa_id>/eliminar", methods=["POST"])
+@login_required
+@admin_required
+@captcha_required("random")
+def empresas_delete(empresa_id):
+    db = SessionLocal()
+    try:
+        empresa = db.get(EmpresaExterna, empresa_id)
+        if not empresa:
+            flash("La empresa no existe.", "danger")
+            return redirect(url_for("empresas_index"))
+
+        # Auditoría de no repudio
+        record_empresa_deletion(
+            db=db,
+            empresa=empresa,
+            actor_user_id=current_user.id,
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent")
+        )
+
+        db.delete(empresa)
+        db.commit()
+
+        flash("Empresa eliminada correctamente.", "success")
+        return redirect(url_for("empresas_index"))
+    finally:
+        db.close()
+
+@app.route("/responsables/<int:responsable_id>/eliminar", methods=["POST"])
+@login_required
+@admin_required
+@captcha_required("random")
+def responsables_delete(responsable_id):
+    db = SessionLocal()
+    try:
+        responsable = db.get(ResponsableEntrega, responsable_id)
+        if not responsable:
+            flash("El responsable no existe.", "danger")
+            return redirect(url_for("responsables_index"))
+
+        # Auditoría de no repudio
+        record_responsable_deletion(
+            db=db,
+            responsable=responsable,
+            actor_user_id=current_user.id,
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent")
+        )
+
+        db.delete(responsable)
+        db.commit()
+
+        flash("Responsable de entrega eliminado correctamente.", "success")
+        return redirect(url_for("responsables_index"))
+    finally:
+        db.close()
 
 
 @app.route("/usuarios/<int:user_id>/eliminar", methods=["POST"])
 @login_required
 @admin_required
+@captcha_required("random")
 def users_delete(user_id: int):
     if user_id == current_user.id:
         flash("No puedes eliminar tu propio usuario mientras estás logueado.", "warning")
@@ -791,6 +1070,33 @@ def self_edit_profile():
     finally:
         db.close()
 
+
+# EMPRESA EXTERNA, RESPONSABLE ENTREGA
+def log_empresa_audit(db, empresa, actor_user_id, action, detail=None, ip=None, user_agent=None):
+    from models import EmpresaExternaAudit
+    a = EmpresaExternaAudit(
+        empresa_id=empresa.id,
+        actor_user_id=actor_user_id,
+        action=action,
+        detail=detail,
+        ip=ip,
+        user_agent=user_agent
+    )
+    db.add(a)
+    db.commit()
+
+def log_responsable_audit(db, responsable, actor_user_id, action, detail=None, ip=None, user_agent=None):
+    from models import ResponsableEntregaAudit
+    a = ResponsableEntregaAudit(
+        responsable_id=responsable.id,
+        actor_user_id=actor_user_id,
+        action=action,
+        detail=detail,
+        ip=ip,
+        user_agent=user_agent
+    )
+    db.add(a)
+    db.commit()
 
 
 # --- Auditoría de acciones para usuarios, es para obtener IP y User-Agent ---
@@ -1019,6 +1325,34 @@ def render_audit_detail(value):
 
     return Markup("".join(parts))
 
+# RECORDAR EMPRESA EXTERNA, RESPONSABLE
+def record_empresa_deletion(db, empresa, actor_user_id, ip=None, user_agent=None):
+    from models import EmpresaExternaDeletion
+    d = EmpresaExternaDeletion(
+        empresa_id=empresa.id,
+        identificacion=empresa.identificacion,
+        nombre=empresa.nombre,
+        actor_user_id=actor_user_id,
+        ip=ip,
+        user_agent=user_agent
+    )
+    db.add(d)
+    db.commit()
+
+def record_responsable_deletion(db, responsable, actor_user_id, ip=None, user_agent=None):
+    from models import ResponsableEntregaDeletion
+    d = ResponsableEntregaDeletion(
+        responsable_id=responsable.id,
+        id_responsable=responsable.id_responsable,
+        nombre_responsable=responsable.nombre_responsable,
+        correo_responsable=responsable.correo_responsable,
+        empresa=responsable.empresa.nombre if responsable.empresa else None,
+        actor_user_id=actor_user_id,
+        ip=ip,
+        user_agent=user_agent
+    )
+    db.add(d)
+    db.commit()
 
 def record_user_deletion(db, u: User, actor_id: int | None):
     from models import UserDeletion
@@ -1063,7 +1397,157 @@ def record_equipo_deletion(db, e, actor_id: int | None): # registra la eliminaci
     return row
 
 
+# AUDITORIA ADMIN de EMPRESAS EXTERNAS, RESPONSABLES ENTREGA
+@app.route("/admin/auditoria-empresas")
+@login_required
+def audit_empresas_admin():
+    from models import EmpresaExternaAudit, EmpresaExterna
 
+    if current_user.role != "admin":
+        abort(403)
+
+    q = request.args.get("q", "").strip()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 20))
+
+    session = SessionLocal()
+
+    query = (
+        session.query(EmpresaExternaAudit, EmpresaExterna)
+        .join(EmpresaExterna, EmpresaExterna.id == EmpresaExternaAudit.empresa_id, isouter=True)
+    )
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                EmpresaExternaAudit.action.ilike(like),
+                EmpresaExterna.identificacion.ilike(like),
+                EmpresaExterna.nombre.ilike(like),
+            )
+        )
+
+    total = query.count()
+    audits = (
+        query.order_by(EmpresaExternaAudit.id.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+
+    return render_template("audit_empresas_admin.html",
+                           audits=audits, q=q,
+                           page=page, size=size, total=total)
+
+@app.route("/admin/auditoria-responsables")
+@login_required
+@admin_required
+def audit_responsables_admin():
+    from models import ResponsableEntregaAudit, ResponsableEntrega, User
+
+    session = SessionLocal()
+
+    q = request.args.get("q", "").strip()
+
+    query = session.query(ResponsableEntregaAudit).join(
+        ResponsableEntrega, ResponsableEntrega.id == ResponsableEntregaAudit.responsable_id,
+        isouter=True
+    ).join(
+        User, User.id == ResponsableEntregaAudit.actor_user_id,
+        isouter=True
+    )
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                ResponsableEntrega.nombre_responsable.ilike(like),
+                ResponsableEntrega.id_responsable.ilike(like),
+                User.username.ilike(like),
+                ResponsableEntregaAudit.action.ilike(like)
+            )
+        )
+
+    query = query.order_by(ResponsableEntregaAudit.created_at.desc())
+
+    registros = query.all()
+
+    return render_template(
+        "audit_responsables_admin.html",
+        registros=registros,
+        q=q
+    )
+
+
+# ELIMINADOS EMPRESAS EXTERNAS, RESPONSABLES ENTREGA
+@app.route("/admin/empresas-eliminadas")
+@login_required
+def empresas_eliminadas():
+    from models import EmpresaExternaDeletion
+
+    if current_user.role != "admin":
+        abort(403)
+
+    q = request.args.get("q", "").strip()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 20))
+
+    session = SessionLocal()
+    query = session.query(EmpresaExternaDeletion)
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                EmpresaExternaDeletion.identificacion.ilike(like),
+                EmpresaExternaDeletion.nombre.ilike(like),
+            )
+        )
+
+    total = query.count()
+    rows = (query.order_by(EmpresaExternaDeletion.id.desc())
+                 .offset((page - 1) * size)
+                 .limit(size)
+                 .all())
+
+    return render_template("empresas_deleted.html",
+                           rows=rows, q=q,
+                           page=page, size=size, total=total)
+
+@app.route("/admin/responsables-eliminados")
+@login_required
+def responsables_eliminados():
+    from models import ResponsableEntregaDeletion
+
+    if current_user.role != "admin":
+        abort(403)
+
+    q = request.args.get("q", "").strip()
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 20))
+
+    session = SessionLocal()
+    query = session.query(ResponsableEntregaDeletion)
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                ResponsableEntregaDeletion.id_responsable.ilike(like),
+                ResponsableEntregaDeletion.nombre_responsable.ilike(like),
+                ResponsableEntregaDeletion.empresa.ilike(like),
+            )
+        )
+
+    total = query.count()
+    rows = (query.order_by(ResponsableEntregaDeletion.id.desc())
+                 .offset((page - 1) * size)
+                 .limit(size)
+                 .all())
+
+    return render_template("responsables_deleted.html",
+                           rows=rows, q=q,
+                           page=page, size=size, total=total)
 
 @app.route("/admin/eliminados") # ---------------------------------- Vista de usuarios eliminados (solo admin)
 @login_required
@@ -1334,57 +1818,6 @@ def responsables_edit(resp_id: int):
         return render_template("responsables_form.html", form=form, is_edit=True, responsable=resp)
     finally:
         db.close()
-
-
-@app.route("/empresas/<int:empresa_id>/eliminar", methods=["POST"])
-@login_required
-@admin_required
-def empresas_delete(empresa_id: int):
-    db = SessionLocal()
-    try:
-        emp = db.get(EmpresaExterna, empresa_id)
-        if not emp:
-            raise NotFound()
-
-        # ¿Hay equipos usando esta empresa?
-        has_equipos = db.query(Equipo).filter(Equipo.empresa_id == emp.id).first() is not None
-        if has_equipos:
-            flash("No puedes eliminar la empresa porque tiene equipos asociados.", "warning")
-            return redirect(url_for("empresas_index"))
-
-        # Si no hay equipos, se puede eliminar.
-        db.delete(emp)
-        db.commit()
-        flash("Empresa eliminada correctamente.", "info")
-        return redirect(url_for("empresas_index"))
-    finally:
-        db.close()
-
-
-@app.route("/responsables/<int:resp_id>/eliminar", methods=["POST"])
-@login_required
-@admin_required
-def responsables_delete(resp_id: int):
-    db = SessionLocal()
-    try:
-        resp = db.get(ResponsableEntrega, resp_id)
-        if not resp:
-            raise NotFound()
-
-        # ¿Hay equipos que dependan de este responsable?
-        has_equipos = db.query(Equipo).filter(Equipo.responsable_id == resp.id).first() is not None
-        if has_equipos:
-            flash("No puedes eliminar el responsable porque tiene equipos asociados.", "warning")
-            return redirect(url_for("responsables_index"))
-
-        db.delete(resp)
-        db.commit()
-        flash("Responsable eliminado correctamente.", "info")
-        return redirect(url_for("responsables_index"))
-    finally:
-        db.close()
-
-
 
 
 # ========= Gestión de Equipos =========
@@ -1978,12 +2411,10 @@ def equipos_delete(equipo_id: int):
     finally:
         db.close()
 
-
-
-
 @app.route("/equipos/eliminar-todos", methods=["POST"])
 @login_required
 @admin_required
+@captcha_required("random")
 def equipos_delete_all():
     db = SessionLocal()
     try:
@@ -2020,6 +2451,7 @@ def equipos_delete_all():
 @app.route("/equipos/eliminar-filtrados", methods=["POST"])
 @login_required
 @admin_required
+@captcha_required("random")
 def equipos_delete_filtered():
     q = (request.form.get("q") or "").strip()
 
@@ -2149,6 +2581,7 @@ def audit_equipo_show(equipo_id: int):
 @app.route("/admin/equipos/eliminados") # ---------------------------------- Vista de equipos eliminados (solo admin)
 @login_required
 @admin_required
+@captcha_required("random")
 def equipos_eliminados():
     db = SessionLocal()
     try:

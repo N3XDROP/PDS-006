@@ -1,0 +1,9 @@
+<form id="redirForm" method="{{ method }}" action="{{ target }}">
+    {% for k, v in data.items() %}
+    <input type="hidden" name="{{ k }}" value="{{ v }}">
+    {% endfor %}
+</form>
+
+<script>
+    document.getElementById("redirForm").submit();
+</script>
