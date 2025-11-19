@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker, scoped_session, joinedload, aliased
 
 # --- Local modules  para la aplicación ---
 import models  
-from models import Base, User, UserAudit, Equipo, EquipoAudit, EmpresaExterna, ResponsableEntrega
+from models import Base, User, UserAudit, Equipo, EquipoAudit, EmpresaExterna, ResponsableEntrega, ResponsableEntregaAudit, EmpresaExternaAudit
 from forms import LoginForm, UserCreateForm, UserEditForm, UserSelfEditForm, EquipoForm, EmpresaExternaForm,ResponsableEntregaForm
 from models import Notification
 
@@ -889,7 +889,6 @@ def users_edit(user_id: int):
     finally:
         db.close()
 
-# Eliminaciones de datos
 @app.route("/empresas/<int:empresa_id>/eliminar", methods=["POST"])
 @login_required
 @admin_required
@@ -900,6 +899,14 @@ def empresas_delete(empresa_id):
         empresa = db.get(EmpresaExterna, empresa_id)
         if not empresa:
             flash("La empresa no existe.", "danger")
+            return redirect(url_for("empresas_index"))
+
+        # ❗ VALIDACIÓN: verificar dependencias
+        tiene_equipos = db.query(Equipo).filter(Equipo.empresa_id == empresa_id).count()
+        tiene_responsables = db.query(ResponsableEntrega).filter(ResponsableEntrega.empresa_id == empresa_id).count()
+
+        if tiene_equipos > 0 or tiene_responsables > 0:
+            flash("No puedes eliminar esta empresa porque tiene equipos o responsables asociados.", "warning")
             return redirect(url_for("empresas_index"))
 
         # Auditoría de no repudio
@@ -931,6 +938,13 @@ def responsables_delete(responsable_id):
             flash("El responsable no existe.", "danger")
             return redirect(url_for("responsables_index"))
 
+        # ❗ VALIDACIÓN: verificar si tiene equipos asociados
+        tiene_equipos = db.query(Equipo).filter(Equipo.responsable_id == responsable_id).count()
+
+        if tiene_equipos > 0:
+            flash("No puedes eliminar este responsable porque tiene equipos asociados.", "warning")
+            return redirect(url_for("responsables_index"))
+
         # Auditoría de no repudio
         record_responsable_deletion(
             db=db,
@@ -948,7 +962,6 @@ def responsables_delete(responsable_id):
     finally:
         db.close()
 
-
 @app.route("/usuarios/<int:user_id>/eliminar", methods=["POST"])
 @login_required
 @admin_required
@@ -964,10 +977,17 @@ def users_delete(user_id: int):
         if not u:
             raise NotFound()
 
-        # 1) Guardar snapshot en papelera (sin audit_row)
+        # ❗ VALIDACIÓN: verificar si es autorizador de equipos
+        tiene_autorizaciones = db.query(Equipo).filter(Equipo.autorizado_por == user_id).count()
+
+        if tiene_autorizaciones > 0:
+            flash("No puedes eliminar este usuario porque está asociado como autorizador en uno o más equipos.", "warning")
+            return redirect(url_for("users_index"))
+
+        # Guardar snapshot en papelera (sin audit_row)
         record_user_deletion(db, u, actor_id=current_user.id)
 
-        # 2) Borrado real
+        # Borrado real
         db.delete(u)
         db.commit()
 
@@ -975,8 +995,6 @@ def users_delete(user_id: int):
         return redirect(url_for("users_index"))
     finally:
         db.close()
-
-
 
 # --- Ruta: edición de perfil por el propio usuario (sin permitir cambiar el rol) ---
 
@@ -1396,12 +1414,9 @@ def record_equipo_deletion(db, e, actor_id: int | None): # registra la eliminaci
     db.commit()
     return row
 
-
-# AUDITORIA ADMIN de EMPRESAS EXTERNAS, RESPONSABLES ENTREGA
 @app.route("/admin/auditoria-empresas")
 @login_required
 def audit_empresas_admin():
-    from models import EmpresaExternaAudit, EmpresaExterna
 
     if current_user.role != "admin":
         abort(403)
@@ -1412,15 +1427,16 @@ def audit_empresas_admin():
 
     session = SessionLocal()
 
+    # ✔ Query correcta: SOLO EmpresaExternaAudit
     query = (
-        session.query(EmpresaExternaAudit, EmpresaExterna)
-        .join(EmpresaExterna, EmpresaExterna.id == EmpresaExternaAudit.empresa_id, isouter=True)
+        session.query(EmpresaExternaAudit)
+        .join(EmpresaExternaAudit.empresa)   # ✔ usar relación del modelo
     )
 
     if q:
         like = f"%{q}%"
         query = query.filter(
-            db.or_(
+            or_(
                 EmpresaExternaAudit.action.ilike(like),
                 EmpresaExterna.identificacion.ilike(like),
                 EmpresaExterna.nombre.ilike(like),
@@ -1428,33 +1444,36 @@ def audit_empresas_admin():
         )
 
     total = query.count()
+
     audits = (
-        query.order_by(EmpresaExternaAudit.id.desc())
+        query.order_by(EmpresaExternaAudit.created_at.desc())
         .offset((page - 1) * size)
         .limit(size)
         .all()
     )
 
-    return render_template("audit_empresas_admin.html",
-                           audits=audits, q=q,
-                           page=page, size=size, total=total)
+    return render_template(
+        "audit_empresas_admin.html",
+        audits=audits,
+        q=q,
+        page=page,
+        size=size,
+        total=total
+    )
 
 @app.route("/admin/auditoria-responsables")
 @login_required
 @admin_required
 def audit_responsables_admin():
-    from models import ResponsableEntregaAudit, ResponsableEntrega, User
-
     session = SessionLocal()
 
-    q = request.args.get("q", "").strip()
+    q = (request.args.get("q") or "").strip()
 
-    query = session.query(ResponsableEntregaAudit).join(
-        ResponsableEntrega, ResponsableEntrega.id == ResponsableEntregaAudit.responsable_id,
-        isouter=True
-    ).join(
-        User, User.id == ResponsableEntregaAudit.actor_user_id,
-        isouter=True
+    # ✔ Query correcto: SOLO instancias de ResponsableEntregaAudit
+    query = (
+        session.query(ResponsableEntregaAudit)
+        .join(ResponsableEntregaAudit.responsable)      # ✔ responsable_id → ResponsableEntrega
+        .join(ResponsableEntregaAudit.actor, isouter=True)   # ✔ actor_user_id → User
     )
 
     if q:
@@ -1468,16 +1487,16 @@ def audit_responsables_admin():
             )
         )
 
-    query = query.order_by(ResponsableEntregaAudit.created_at.desc())
-
-    registros = query.all()
+    registros = (
+        query.order_by(ResponsableEntregaAudit.created_at.desc())
+        .all()
+    )
 
     return render_template(
         "audit_responsables_admin.html",
         registros=registros,
         q=q
     )
-
 
 # ELIMINADOS EMPRESAS EXTERNAS, RESPONSABLES ENTREGA
 @app.route("/admin/empresas-eliminadas")
@@ -1615,7 +1634,7 @@ def empresas_create():
             ident = (form.identificacion.data or "").strip()
             nombre = (form.nombre.data or "").strip()
 
-            # Verificar unicidad de identificación
+            # Verificar unicidad
             exists = db.query(EmpresaExterna).filter(
                 EmpresaExterna.identificacion == ident
             ).first()
@@ -1630,6 +1649,22 @@ def empresas_create():
             db.add(emp)
             db.commit()
 
+            # 🔥 AUDITORÍA: creación
+            log_empresa_audit(
+                db=db,
+                empresa=emp,
+                actor_user_id=current_user.id,
+                action="create",
+                detail=json.dumps({
+                    "created": {
+                        "identificacion": emp.identificacion,
+                        "nombre": emp.nombre
+                    }
+                }, ensure_ascii=False),
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent")
+            )
+
             flash("Empresa creada correctamente.", "success")
             return redirect(url_for("empresas_index"))
         finally:
@@ -1638,7 +1673,6 @@ def empresas_create():
         flash("Revisa el formulario.", "warning")
 
     return render_template("empresas_form.html", form=form, is_edit=False)
-
 
 @app.route("/empresas/<int:empresa_id>/editar", methods=["GET", "POST"])
 @login_required
@@ -1656,7 +1690,7 @@ def empresas_edit(empresa_id: int):
             new_ident = (form.identificacion.data or "").strip()
             new_nombre = (form.nombre.data or "").strip()
 
-            # Verificar colisión de identificación con otra empresa
+            # Verificar colisión
             clash = db.query(EmpresaExterna).filter(
                 EmpresaExterna.identificacion == new_ident,
                 EmpresaExterna.id != emp.id
@@ -1665,11 +1699,31 @@ def empresas_edit(empresa_id: int):
                 flash("Otra empresa ya tiene esa identificación.", "danger")
                 return render_template("empresas_form.html", form=form, is_edit=True, empresa=emp)
 
+            # 🔥 detectar cambios
+            cambios = {}
+
+            if emp.identificacion != new_ident:
+                cambios["identificacion"] = {"old": emp.identificacion, "new": new_ident}
+            if emp.nombre != new_nombre:
+                cambios["nombre"] = {"old": emp.nombre, "new": new_nombre}
+
             emp.identificacion = new_ident
             emp.nombre = new_nombre
 
             db.add(emp)
             db.commit()
+
+            # 🔥 AUDITORÍA: actualización
+            if cambios:
+                log_empresa_audit(
+                    db=db,
+                    empresa=emp,
+                    actor_user_id=current_user.id,
+                    action="update",
+                    detail=json.dumps({"changes": cambios}, ensure_ascii=False),
+                    ip=request.remote_addr,
+                    user_agent=request.headers.get("User-Agent")
+                )
 
             flash("Empresa actualizada.", "success")
             return redirect(url_for("empresas_index"))
@@ -1705,7 +1759,6 @@ def responsables_index():
     finally:
         db.close()
 
-
 @app.route("/responsables/crear", methods=["GET", "POST"])
 @login_required
 @admin_required
@@ -1724,8 +1777,7 @@ def responsables_create():
 
         form = ResponsableEntregaForm()
         form.empresa_id.choices = [
-            (e.id, f"{e.identificacion} — {e.nombre}")
-            for e in empresas
+            (e.id, f"{e.identificacion} — {e.nombre}") for e in empresas
         ]
 
         if form.validate_on_submit():
@@ -1733,7 +1785,7 @@ def responsables_create():
             nombre = (form.nombre_responsable.data or "").strip()
             correo = (form.correo_responsable.data or "").strip()
 
-            # Unicidad de id_responsable
+            # Unicidad
             exists = db.query(ResponsableEntrega).filter(
                 ResponsableEntrega.id_responsable == id_resp
             ).first()
@@ -1749,6 +1801,24 @@ def responsables_create():
             )
             db.add(resp)
             db.commit()
+
+            # 🔥 AUDITORÍA: creación
+            log_responsable_audit(
+                db=db,
+                responsable=resp,
+                actor_user_id=current_user.id,
+                action="create",
+                detail=json.dumps({
+                    "created": {
+                        "id_responsable": resp.id_responsable,
+                        "nombre_responsable": resp.nombre_responsable,
+                        "correo_responsable": resp.correo_responsable,
+                        "empresa": resp.empresa.nombre
+                    }
+                }, ensure_ascii=False),
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent")
+            )
 
             flash("Responsable creado correctamente.", "success")
             return redirect(url_for("responsables_index"))
@@ -1770,23 +1840,13 @@ def responsables_edit(resp_id: int):
         if not resp:
             raise NotFound()
 
-        empresas = (
-            db.query(EmpresaExterna)
-              .order_by(EmpresaExterna.nombre.asc())
-              .all()
-        )
-
-        if not empresas:
-            flash("No hay empresas registradas. Crea una primero.", "warning")
-            return redirect(url_for("empresas_create"))
-
+        empresas = db.query(EmpresaExterna).order_by(EmpresaExterna.nombre.asc()).all()
         form = ResponsableEntregaForm(obj=resp)
+
         form.empresa_id.choices = [
-            (e.id, f"{e.identificacion} — {e.nombre}")
-            for e in empresas
+            (e.id, f"{e.identificacion} — {e.nombre}") for e in empresas
         ]
 
-        # Preseleccionar empresa actual en GET
         if request.method == "GET":
             form.empresa_id.data = resp.empresa_id
 
@@ -1794,23 +1854,54 @@ def responsables_edit(resp_id: int):
             new_id_resp = (form.id_responsable.data or "").strip()
             new_nombre = (form.nombre_responsable.data or "").strip()
             new_correo = (form.correo_responsable.data or "").strip()
+            new_empresa_id = form.empresa_id.data
 
-            # Unicidad de id_responsable
+            # Unicidad
             clash = db.query(ResponsableEntrega).filter(
                 ResponsableEntrega.id_responsable == new_id_resp,
                 ResponsableEntrega.id != resp.id
             ).first()
             if clash:
                 flash("Otro responsable ya tiene ese ID.", "danger")
-                return render_template("responsables_form.html", form=form, is_edit=True, responsable=resp)
+                return render_template(
+                    "responsables_form.html", form=form, is_edit=True, responsable=resp
+                )
 
+            # 🔥 Detectar cambios
+            cambios = {}
+
+            if resp.id_responsable != new_id_resp:
+                cambios["id_responsable"] = {"old": resp.id_responsable, "new": new_id_resp}
+            if resp.nombre_responsable != new_nombre:
+                cambios["nombre_responsable"] = {"old": resp.nombre_responsable, "new": new_nombre}
+            if resp.correo_responsable != new_correo:
+                cambios["correo_responsable"] = {"old": resp.correo_responsable, "new": new_correo}
+            if resp.empresa_id != new_empresa_id:
+                cambios["empresa"] = {
+                    "old": resp.empresa.nombre,
+                    "new": db.get(EmpresaExterna, new_empresa_id).nombre
+                }
+
+            # Aplicar cambios
             resp.id_responsable = new_id_resp
             resp.nombre_responsable = new_nombre
             resp.correo_responsable = new_correo
-            resp.empresa_id = form.empresa_id.data
+            resp.empresa_id = new_empresa_id
 
             db.add(resp)
             db.commit()
+
+            # 🔥 AUDITORÍA: actualización
+            if cambios:
+                log_responsable_audit(
+                    db=db,
+                    responsable=resp,
+                    actor_user_id=current_user.id,
+                    action="update",
+                    detail=json.dumps({"changes": cambios}, ensure_ascii=False),
+                    ip=request.remote_addr,
+                    user_agent=request.headers.get("User-Agent")
+                )
 
             flash("Responsable actualizado.", "success")
             return redirect(url_for("responsables_index"))
@@ -1818,7 +1909,6 @@ def responsables_edit(resp_id: int):
         return render_template("responsables_form.html", form=form, is_edit=True, responsable=resp)
     finally:
         db.close()
-
 
 # ========= Gestión de Equipos =========
 
@@ -2580,8 +2670,6 @@ def audit_equipo_show(equipo_id: int):
 
 @app.route("/admin/equipos/eliminados") # ---------------------------------- Vista de equipos eliminados (solo admin)
 @login_required
-@admin_required
-@captcha_required("random")
 def equipos_eliminados():
     db = SessionLocal()
     try:
