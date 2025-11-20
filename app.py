@@ -921,6 +921,13 @@ def empresas_delete(empresa_id):
         db.delete(empresa)
         db.commit()
 
+        notify_admins(
+            db,
+            title="Empresa externa eliminada",
+            body=f"Empresa eliminada: {empresa.nombre}. Actor: {current_user.username}",
+            level="danger",
+        )
+
         flash("Empresa eliminada correctamente.", "success")
         return redirect(url_for("empresas_index"))
     finally:
@@ -956,6 +963,13 @@ def responsables_delete(responsable_id):
 
         db.delete(responsable)
         db.commit()
+
+        notify_admins(
+            db,
+            title="Responsable de entrega eliminado",
+            body=f"Eliminado: {responsable.nombre_responsable}. Actor: {current_user.username}",
+            level="danger",
+        )
 
         flash("Responsable de entrega eliminado correctamente.", "success")
         return redirect(url_for("responsables_index"))
@@ -1665,6 +1679,13 @@ def empresas_create():
                 user_agent=request.headers.get("User-Agent")
             )
 
+            notify_admins(
+                db,
+                title="Nueva empresa externa registrada",
+                body=f"Empresa: {emp.nombre} ({emp.identificacion}).",
+                level="info",
+            )
+
             flash("Empresa creada correctamente.", "success")
             return redirect(url_for("empresas_index"))
         finally:
@@ -1724,6 +1745,13 @@ def empresas_edit(empresa_id: int):
                     ip=request.remote_addr,
                     user_agent=request.headers.get("User-Agent")
                 )
+
+            notify_admins(
+                db,
+                title="Empresa externa actualizada",
+                body=f"Empresa: {emp.nombre} ({emp.identificacion}).",
+                level="info",
+            )
 
             flash("Empresa actualizada.", "success")
             return redirect(url_for("empresas_index"))
@@ -1820,6 +1848,13 @@ def responsables_create():
                 user_agent=request.headers.get("User-Agent")
             )
 
+            notify_admins(
+                db,
+                title="Nuevo responsable de entrega",
+                body=f"Responsable: {resp.nombre_responsable} (Empresa: {resp.empresa.nombre}).",
+                level="info",
+            )
+
             flash("Responsable creado correctamente.", "success")
             return redirect(url_for("responsables_index"))
 
@@ -1902,6 +1937,13 @@ def responsables_edit(resp_id: int):
                     ip=request.remote_addr,
                     user_agent=request.headers.get("User-Agent")
                 )
+
+            notify_admins(
+                db,
+                title="Responsable de entrega actualizado",
+                body=f"Se modificó {resp.nombre_responsable}.",
+                level="warning",
+            )
 
             flash("Responsable actualizado.", "success")
             return redirect(url_for("responsables_index"))
